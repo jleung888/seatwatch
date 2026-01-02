@@ -2,7 +2,6 @@ import datetime as dt
 import os
 from typing import Any
 
-
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
@@ -16,7 +15,7 @@ except Exception:
 from seats_watch import AMADEUS_DEFAULT_HOST, AmadeusClient
 
 app = FastAPI()
-from fastapi.responses import HTMLResponse
+
 
 @app.get("/", include_in_schema=False)
 def root() -> HTMLResponse:
@@ -36,6 +35,9 @@ def root() -> HTMLResponse:
       input {{ padding: 8px; border: 1px solid #ccc; border-radius: 6px; }}
       button {{ padding: 9px 12px; border: 0; border-radius: 6px; background: #111; color: white; cursor: pointer; }}
       pre {{ background: #f6f8fa; padding: 12px; border-radius: 8px; overflow: auto; }}
+      table {{ border-collapse: collapse; width: 100%; }}
+      th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+      th {{ background: #f6f8fa; }}
       .muted {{ color: #666; font-size: 12px; }}
     </style>
   </head>
@@ -67,11 +69,45 @@ def root() -> HTMLResponse:
 
     <p class="muted">Also available: <a href="/docs">/docs</a>, <a href="/health">/health</a></p>
 
-    <h3>Result</h3>
-    <pre id="out">Click Run…</pre>
+    <h3>Results</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Min bookable</th>
+          <th># offers (&lt; 9)</th>
+          <th>Error</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <tr><td colspan="4" class="muted">Click Run…</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Raw JSON</h3>
+    <pre id="out">(not run yet)</pre>
 
     <script>
       const out = document.getElementById('out');
+      const rows = document.getElementById('rows');
+
+      function setRows(items) {{
+        rows.innerHTML = '';
+        if (!items || items.length === 0) {{
+          rows.innerHTML = '<tr><td colspan="4" class="muted">No low-seat dates found.</td></tr>';
+          return;
+        }}
+        for (const item of items) {{
+          const date = item.date || '';
+          const min = (item.min_bookable === undefined || item.min_bookable === null) ? '' : String(item.min_bookable);
+          const count = (item.count_low_offers === undefined || item.count_low_offers === null) ? '' : String(item.count_low_offers);
+          const err = item.error ? String(item.error) : '';
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${{date}}</td><td>${{min}}</td><td>${{count}}</td><td>${{err}}</td>`;
+          rows.appendChild(tr);
+        }}
+      }}
+
       document.getElementById('run').addEventListener('click', async () => {{
         const origin = document.getElementById('origin').value.trim();
         const dest = document.getElementById('dest').value.trim();
@@ -79,19 +115,21 @@ def root() -> HTMLResponse:
         const end = document.getElementById('end').value;
         const url = `/check?origin=${{encodeURIComponent(origin)}}&dest=${{encodeURIComponent(dest)}}&start=${{encodeURIComponent(start)}}&end=${{encodeURIComponent(end)}}`;
         out.textContent = `GET ${{url}}\\n\\nLoading...`;
+        rows.innerHTML = '<tr><td colspan="4" class="muted">Loading...</td></tr>';
         try {{
           const resp = await fetch(url);
-          const text = await resp.text();
-          out.textContent = `GET ${{url}}\\nstatus=${{resp.status}}\\n\\n${{text}}`;
+          const json = await resp.json();
+          out.textContent = `GET ${{url}}\\nstatus=${{resp.status}}\\n\\n${{JSON.stringify(json, null, 2)}}`;
+          setRows(json.results || []);
         }} catch (e) {{
           out.textContent = `Request failed: ${{e}}`;
+          rows.innerHTML = `<tr><td colspan="4">Request failed: ${{e}}</td></tr>`;
         }}
       }});
     </script>
   </body>
 </html>"""
     return HTMLResponse(content=html)
-
 
 
 @app.get("/health")
@@ -140,7 +178,13 @@ def check(
 
     for day in _iter_dates(start, end):
         try:
-            payload = client.flight_offers_search(origin=origin.upper(), destination=dest.upper(), departure_date=day, adults=1, max_results=250)
+            payload = client.flight_offers_search(
+                origin=origin.upper(),
+                destination=dest.upper(),
+                departure_date=day,
+                adults=1,
+                max_results=250,
+            )
             offers = payload.get("data") or []
             if not isinstance(offers, list):
                 offers = []
@@ -168,5 +212,10 @@ def check(
         except Exception as exc:
             results.append({"date": day.isoformat(), "error": str(exc)})
 
-    return {"origin": origin.upper(), "dest": dest.upper(), "start": start.isoformat(), "end": end.isoformat(), "results": results}
-
+    return {
+        "origin": origin.upper(),
+        "dest": dest.upper(),
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "results": results,
+    }
