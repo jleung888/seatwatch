@@ -2,7 +2,9 @@ import datetime as dt
 import os
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, Response
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
 
 try:
     from dotenv import load_dotenv
@@ -14,9 +16,82 @@ except Exception:
 from seats_watch import AMADEUS_DEFAULT_HOST, AmadeusClient
 
 app = FastAPI()
-@app.api_route("/", methods=["GET", "HEAD"])
-def root():
-    return Response(content="ok", media_type="text/plain")
+from fastapi.responses import HTMLResponse
+
+@app.get("/", include_in_schema=False)
+def root() -> HTMLResponse:
+    today = dt.date.today()
+    start = today.isoformat()
+    end = (today + dt.timedelta(days=1)).isoformat()
+    html = f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Seatwatch</title>
+    <style>
+      body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }}
+      .row {{ display: flex; gap: 12px; flex-wrap: wrap; align-items: end; }}
+      label {{ display: block; font-size: 12px; color: #444; margin-bottom: 4px; }}
+      input {{ padding: 8px; border: 1px solid #ccc; border-radius: 6px; }}
+      button {{ padding: 9px 12px; border: 0; border-radius: 6px; background: #111; color: white; cursor: pointer; }}
+      pre {{ background: #f6f8fa; padding: 12px; border-radius: 8px; overflow: auto; }}
+      .muted {{ color: #666; font-size: 12px; }}
+    </style>
+  </head>
+  <body>
+    <h1>Seatwatch</h1>
+    <p class="muted">Runs <code>/check</code> and returns dates where <code>numberOfBookableSeats &lt; 9</code> (ignores <code>9</code> as “9+ / unknown”).</p>
+
+    <div class="row">
+      <div>
+        <label>Origin</label>
+        <input id="origin" value="LAX" maxlength="3" size="6" />
+      </div>
+      <div>
+        <label>Dest</label>
+        <input id="dest" value="HKG" maxlength="3" size="6" />
+      </div>
+      <div>
+        <label>Start</label>
+        <input id="start" type="date" value="{start}" />
+      </div>
+      <div>
+        <label>End</label>
+        <input id="end" type="date" value="{end}" />
+      </div>
+      <div>
+        <button id="run">Run</button>
+      </div>
+    </div>
+
+    <p class="muted">Also available: <a href="/docs">/docs</a>, <a href="/health">/health</a></p>
+
+    <h3>Result</h3>
+    <pre id="out">Click Run…</pre>
+
+    <script>
+      const out = document.getElementById('out');
+      document.getElementById('run').addEventListener('click', async () => {{
+        const origin = document.getElementById('origin').value.trim();
+        const dest = document.getElementById('dest').value.trim();
+        const start = document.getElementById('start').value;
+        const end = document.getElementById('end').value;
+        const url = `/check?origin=${{encodeURIComponent(origin)}}&dest=${{encodeURIComponent(dest)}}&start=${{encodeURIComponent(start)}}&end=${{encodeURIComponent(end)}}`;
+        out.textContent = `GET ${{url}}\\n\\nLoading...`;
+        try {{
+          const resp = await fetch(url);
+          const text = await resp.text();
+          out.textContent = `GET ${{url}}\\nstatus=${{resp.status}}\\n\\n${{text}}`;
+        }} catch (e) {{
+          out.textContent = `Request failed: ${{e}}`;
+        }}
+      }});
+    </script>
+  </body>
+</html>"""
+    return HTMLResponse(content=html)
+
 
 
 @app.get("/health")
