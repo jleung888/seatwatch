@@ -2,7 +2,7 @@ import datetime as dt
 import os
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 
 try:
     from dotenv import load_dotenv
@@ -14,6 +14,9 @@ except Exception:
 from seats_watch import AMADEUS_DEFAULT_HOST, AmadeusClient
 
 app = FastAPI()
+@app.api_route("/", methods=["GET", "HEAD"])
+def root():
+    return Response(content="ok", media_type="text/plain")
 
 
 @app.get("/health")
