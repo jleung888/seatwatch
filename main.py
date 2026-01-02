@@ -12,9 +12,17 @@ try:
 except Exception:
     pass
 
-from seats_watch import AMADEUS_DEFAULT_HOST, AmadeusClient
+from seats_watch import AMADEUS_DEFAULT_HOST, find_direct_flight_max_bookable_seats_by_cabin
 
 app = FastAPI()
+
+
+def _amadeus_creds() -> tuple[str, str]:
+    client_id = os.getenv("AMADEUS_CLIENT_ID")
+    client_secret = os.getenv("AMADEUS_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=500, detail="Missing AMADEUS_CLIENT_ID/AMADEUS_CLIENT_SECRET")
+    return client_id, client_secret
 
 
 @app.get("/", include_in_schema=False)
@@ -22,6 +30,7 @@ def root() -> HTMLResponse:
     today = dt.date.today()
     start = today.isoformat()
     end = (today + dt.timedelta(days=1)).isoformat()
+
     html = f"""<!doctype html>
 <html lang="en">
   <head>
@@ -35,15 +44,16 @@ def root() -> HTMLResponse:
       input {{ padding: 8px; border: 1px solid #ccc; border-radius: 6px; }}
       button {{ padding: 9px 12px; border: 0; border-radius: 6px; background: #111; color: white; cursor: pointer; }}
       pre {{ background: #f6f8fa; padding: 12px; border-radius: 8px; overflow: auto; }}
-      table {{ border-collapse: collapse; width: 100%; }}
-      th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
-      th {{ background: #f6f8fa; }}
+      table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
+      th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; white-space: nowrap; }}
+      th {{ background: #f6f8fa; position: sticky; top: 0; }}
       .muted {{ color: #666; font-size: 12px; }}
+      .scroll {{ overflow: auto; border: 1px solid #ddd; border-radius: 8px; max-height: 65vh; }}
     </style>
   </head>
   <body>
     <h1>Seatwatch</h1>
-    <p class="muted">Runs <code>/check</code> and returns dates where <code>numberOfBookableSeats &lt; 9</code> (ignores <code>9</code> as “9+ / unknown”).</p>
+    <p class="muted">Direct flights grouped by operating flight and date. Tightness is included. Seatmaps are excluded.</p>
 
     <div class="row">
       <div>
@@ -69,20 +79,29 @@ def root() -> HTMLResponse:
 
     <p class="muted">Also available: <a href="/docs">/docs</a>, <a href="/health">/health</a></p>
 
-    <h3>Results</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Date</th>
-          <th>Min bookable</th>
-          <th># offers (&lt; 9)</th>
-          <th>Error</th>
-        </tr>
-      </thead>
-      <tbody id="rows">
-        <tr><td colspan="4" class="muted">Click Run…</td></tr>
-      </tbody>
-    </table>
+    <h3>Flights</h3>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Airline</th>
+            <th>Flight</th>
+            <th>Departure</th>
+            <th>Tightness</th>
+            <th>Score</th>
+            <th>Min bookable</th>
+            <th>Economy max</th>
+            <th>Prem Econ max</th>
+            <th>Business max</th>
+            <th>First max</th>
+          </tr>
+        </thead>
+        <tbody id="rows">
+          <tr><td colspan="11" class="muted">Click Run…</td></tr>
+        </tbody>
+      </table>
+    </div>
 
     <h3>Raw JSON</h3>
     <pre id="out">(not run yet)</pre>
@@ -91,19 +110,32 @@ def root() -> HTMLResponse:
       const out = document.getElementById('out');
       const rows = document.getElementById('rows');
 
+      function cell(v) {{
+        if (v === undefined || v === null) return '';
+        return String(v);
+      }}
+
       function setRows(items) {{
         rows.innerHTML = '';
         if (!items || items.length === 0) {{
-          rows.innerHTML = '<tr><td colspan="4" class="muted">No low-seat dates found.</td></tr>';
+          rows.innerHTML = '<tr><td colspan="11" class="muted">No results.</td></tr>';
           return;
         }}
-        for (const item of items) {{
-          const date = item.date || '';
-          const min = (item.min_bookable === undefined || item.min_bookable === null) ? '' : String(item.min_bookable);
-          const count = (item.count_low_offers === undefined || item.count_low_offers === null) ? '' : String(item.count_low_offers);
-          const err = item.error ? String(item.error) : '';
+        for (const r of items) {{
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${{date}}</td><td>${{min}}</td><td>${{count}}</td><td>${{err}}</td>`;
+          tr.innerHTML = `
+            <td>${{cell(r.date)}}</td>
+            <td>${{cell(r.airline)}}</td>
+            <td>${{cell(r.flight)}}</td>
+            <td>${{cell(r.departureTime)}}</td>
+            <td>${{cell(r.tightnessLabel)}}</td>
+            <td>${{cell(r.tightnessScore)}}</td>
+            <td>${{cell(r.tightnessMinBookable)}}</td>
+            <td>${{cell(r.economyMax)}}</td>
+            <td>${{cell(r.premiumEconomyMax)}}</td>
+            <td>${{cell(r.businessMax)}}</td>
+            <td>${{cell(r.firstMax)}}</td>
+          `;
           rows.appendChild(tr);
         }}
       }}
@@ -115,15 +147,15 @@ def root() -> HTMLResponse:
         const end = document.getElementById('end').value;
         const url = `/check?origin=${{encodeURIComponent(origin)}}&dest=${{encodeURIComponent(dest)}}&start=${{encodeURIComponent(start)}}&end=${{encodeURIComponent(end)}}`;
         out.textContent = `GET ${{url}}\\n\\nLoading...`;
-        rows.innerHTML = '<tr><td colspan="4" class="muted">Loading...</td></tr>';
+        rows.innerHTML = '<tr><td colspan="11" class="muted">Loading...</td></tr>';
         try {{
           const resp = await fetch(url);
           const json = await resp.json();
           out.textContent = `GET ${{url}}\\nstatus=${{resp.status}}\\n\\n${{JSON.stringify(json, null, 2)}}`;
-          setRows(json.results || []);
+          setRows(json.rows || []);
         }} catch (e) {{
           out.textContent = `Request failed: ${{e}}`;
-          rows.innerHTML = `<tr><td colspan="4">Request failed: ${{e}}</td></tr>`;
+          rows.innerHTML = `<tr><td colspan="11">Request failed: ${{e}}</td></tr>`;
         }}
       }});
     </script>
@@ -137,32 +169,6 @@ def health() -> dict[str, bool]:
     return {"ok": True}
 
 
-def _get_client() -> AmadeusClient:
-    client_id = os.getenv("AMADEUS_CLIENT_ID")
-    client_secret = os.getenv("AMADEUS_CLIENT_SECRET")
-    if not client_id or not client_secret:
-        raise HTTPException(status_code=500, detail="Missing AMADEUS_CLIENT_ID/AMADEUS_CLIENT_SECRET")
-    return AmadeusClient(client_id=client_id, client_secret=client_secret, host=AMADEUS_DEFAULT_HOST)
-
-
-def _iter_dates(start: dt.date, end: dt.date):
-    cur = start
-    one = dt.timedelta(days=1)
-    while cur <= end:
-        yield cur
-        cur += one
-
-
-def _offer_seats(offer: dict[str, Any]) -> int | None:
-    seats = offer.get("numberOfBookableSeats")
-    if seats is None:
-        return None
-    try:
-        return int(seats)
-    except Exception:
-        return None
-
-
 @app.get("/check")
 def check(
     origin: str = Query(..., min_length=3, max_length=3),
@@ -173,49 +179,44 @@ def check(
     if end < start:
         raise HTTPException(status_code=400, detail="end must be on/after start")
 
-    client = _get_client()
-    results: list[dict[str, Any]] = []
+    client_id, client_secret = _amadeus_creds()
+    rows = find_direct_flight_max_bookable_seats_by_cabin(
+        origin=origin.upper(),
+        destination=dest.upper(),
+        start_date=start,
+        end_date=end,
+        client_id=client_id,
+        client_secret=client_secret,
+        host=AMADEUS_DEFAULT_HOST,
+        max_results=250,
+        include_seatmaps=False,
+        include_tightness=True,
+        debug_offers=False,
+    )
 
-    for day in _iter_dates(start, end):
-        try:
-            payload = client.flight_offers_search(
-                origin=origin.upper(),
-                destination=dest.upper(),
-                departure_date=day,
-                adults=1,
-                max_results=250,
-            )
-            offers = payload.get("data") or []
-            if not isinstance(offers, list):
-                offers = []
-
-            low = []
-            for offer in offers:
-                if not isinstance(offer, dict):
-                    continue
-                seats = _offer_seats(offer)
-                if seats is None:
-                    continue
-                if seats == 9:
-                    continue  # 9+ / unknown; do not treat as <= 9
-                if seats < 9:
-                    low.append(seats)
-
-            if low:
-                results.append(
-                    {
-                        "date": day.isoformat(),
-                        "min_bookable": min(low),
-                        "count_low_offers": len(low),
-                    }
-                )
-        except Exception as exc:
-            results.append({"date": day.isoformat(), "error": str(exc)})
+    out_rows: list[dict[str, Any]] = []
+    for row in rows:
+        d = row.get("date")
+        out_rows.append(
+            {
+                "date": d.isoformat() if hasattr(d, "isoformat") else str(d),
+                "airline": row.get("airline"),
+                "flight": row.get("flight"),
+                "departureTime": row.get("departureTime"),
+                "economyMax": row.get("economyMax"),
+                "premiumEconomyMax": row.get("premiumEconomyMax"),
+                "businessMax": row.get("businessMax"),
+                "firstMax": row.get("firstMax"),
+                "tightnessMinBookable": row.get("tightnessMinBookable"),
+                "tightnessScore": row.get("tightnessScore"),
+                "tightnessLabel": row.get("tightnessLabel"),
+            }
+        )
 
     return {
         "origin": origin.upper(),
         "dest": dest.upper(),
         "start": start.isoformat(),
         "end": end.isoformat(),
-        "results": results,
+        "rows": out_rows,
     }
