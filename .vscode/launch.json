@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Seat Watch UI",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/seats_watch_ui.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "preLaunchTask": "Seat Watch: Install deps",
+      "justMyCode": true
+    }
+  ]
+}

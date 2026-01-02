@@ -1,0 +1,28 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Seat Watch: Create venv",
+      "type": "shell",
+      "command": "${command:python.interpreterPath}",
+      "args": ["-m", "venv", ".venv"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Seat Watch: Install deps",
+      "type": "shell",
+      "command": ".\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "pip", "install", "-r", "requirements.txt"],
+      "problemMatcher": [],
+      "dependsOn": ["Seat Watch: Create venv"]
+    },
+    {
+      "label": "Seat Watch: Run UI",
+      "type": "shell",
+      "command": ".\\.venv\\Scripts\\python.exe",
+      "args": [".\\seats_watch_ui.py"],
+      "problemMatcher": [],
+      "dependsOn": ["Seat Watch: Install deps"]
+    }
+  ]
+}
